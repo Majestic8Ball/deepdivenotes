@@ -89,3 +89,103 @@ Since the last bit was about layering of protocols, this is now about how networ
 ##### Data Encapsulation
 ---
 A packet is wrapped in a header, and sometimes a footer, and is encapsulated again by the protocol (for example UDP), then again by the next (say, IP), then again by the final protocol on the hardware (physical) layer, (say, Ethernet).
+
+When another computer receives the packet, the hardware strips the Ethernet header, the kernel strips the IP and UDP headers, the TFTP program strips the TFTP header, and it finally has the data.
+
+##### Layered Network Model (ISO/OSI)
+---
+This network model describes a system of network functionality that has many advantages over other models. For instance, you can write sockets programs that are exactly the same without caring how the data is physically transmitted (serial, thin Ethernet, AUI, etc) because programs on lower levels deal with it for you. The actual network hardware and topology is transparent to the socket programmer.
+
+###### Layers
+---
+- Application
+- Presentation
+- Session
+- Transport
+- Network
+- Data Link
+- Physical
+This is super general, so a more specific layered model consistent with Unix might be:
+- Application Layer (telnet, ftp, etc)
+- Host-to-Host Transport Layer (TCP, UDP)
+- Internet Layer (IP and routing)
+- Network Access Layer (Ethernet, wi-fi, or whatever)
+
+This is how much there is to building a simple packet. But, modern technology does all of this for you. For a Stream Socket, ``send()`` does the work for you. For a Datagram Socket, ``sendto()`` will do it for you after you encapsulate the packet in the method of your choosing. The kernel builds the Transport Layer and Internet Layer on for you and the hardware does the Network Access Layer.
+
+###### Rant About Encapsulation and this Whole Process Brain Blast
+---
+This is something that always confused me, but now I see clarity. The layering is not them actually encapsulating each other. Each part is just being sent sequentially, then the top part is read so it knows where to send the rest each time. Think of it like a rocket ship that will shed parts of itself off to get to the next part. Each part only reads the relevant portion and treats the rest as a black box.
+
+Transport Layer (usually handled by the kernel):
+```C
+struct udp_header {
+    uint16_t source_port;      // Port this packet is from
+    uint16_t dest_port;        // Port this packet is to
+    uint16_t length;           // Length of UDP header + data
+    uint16_t checksum;         // Error checking value
+};
+```
+Internet Layer (kernel handles):
+```C
+struct ip_header {
+    uint8_t  version_ihl;      // Version and header length
+    uint8_t  type_of_service;  // Quality of service flags
+    uint16_t total_length;     // Length of entire packet
+    uint16_t identification;   // Used for fragmentation
+    uint16_t flags_offset;     // Flags and fragment offset
+    uint8_t  time_to_live;     // How many hops before discarding
+    uint8_t  protocol;         // Which protocol is encapsulated (UDP=17)
+    uint16_t header_checksum;  // Error checking for header
+    uint32_t source_ip;        // Source IP address
+    uint32_t dest_ip;          // Destination IP address
+    // Optional fields might follow
+};
+```
+Network Access Layer (kernel + hardware):
+```C
+struct ethernet_header {
+    uint8_t  dest_mac[6];      // Destination MAC address
+    uint8_t  source_mac[6];    // Source MAC address
+    uint16_t ethertype;        // Type of encapsulated protocol (IP=0x0800)
+};
+```
+The actual packet on the wire would look like:
+```C
+[Ethernet Header][IP Header][UDP Header][Your Application Data][Ethernet CRC]
+```
+
+So, ``send()`` and ``sendto()`` handle that whole header creation process for you within the socket API, the kernel automatically handles the lower-level encapsulation. This is where Raw Sockets could come in to let you implement this yourself (particularly with the IP layer), but typically require root/admin privileges and are only used for specific applications like custom network protocols, network diagnostics, or security tools.
+
+## IP Addresses, ``struct``s, and Data Munging
+---
+>IP addresses and ports, how sockets API stores and manipulates IP addresses and other data, then coding
+#### IP Addresses, versions 4 and 6
+---
+IPv4 has addresses made up of four bytes and was written as such ``192.0.2.111``, virtually every site uses IPv4.
+
+With that structure though, we were going to run out of addresses, [Vint Cerf](https://en.wikipedia.org/wiki/Vint_Cerf) warned us of this. Even though it could hold billions of addresses, it is not nearly enough for the scale of the internet. Due to this, IPv6 was made.
+
+IPv4 is 2$^3$$^2$ and IPv6 is 2$^1$$^2$$^8$. With IPv6 we have hexadecimal representation, with each two-byte chunk separated by a colon. ``2001:0db8:c9d2:aee5:73e3:934a:a5ae:9551``
+Lots of times you will have an IP address with lots of zeros in it, and you can compress them between two colons. You can leave off leading zeros for each byte pair. Each of these are equivalent:
+```
+2001:0db8:c9d2:0012:0000:0000:0000:0051
+2001:db8:c9d2:12::51
+
+2001:0db8:ab00:0000:0000:0000:0000:0000
+2001:db8:ab00::
+
+0000:0000:0000:0000:0000:0000:0000:0001
+::1
+```
+
+The address ``::1`` is the loopback address. It always means "this machine I'm running on now". In IPv4, the loopback address is ``127.0.0.1``.
+
+There is also IPv4-compatibility for IPv6 addresses. If you want to represent the IPv4 address `192.0.2.33` as an IPv6 address you would use “`::ffff:192.0.2.33`”.
+##### What the Fuck is an IP
+---
+IP Addresses are just a unique identifier for devices on networks. Each device gets dynamically assigned an address, sometimes can be static assessment (usually by user choice).
+
+There is a big distinction here, because I was confused on what an IP even is. There are different kinds of networks. LANS, WANS and Internet. Lets say in your home you have a LAN, it is a private network with your personal devices on it. But, that is the private IP of the device. In your home the LAN is handled by a router. This router has a public IP that is in its own "network" of sorts with the other routers in the region/ISP/place (this is handled by companies and other governing bodies). Lets get more specific to what I mean by that, the router has a public IP that is part of a block assigned by the ISP.
+
+Well, now we have so many IPs and even maybe duplicate IPs within their own LANs. How can we even parse through this if we want to send data to someone. Think of it like this, when you send someone a letter, its not just the number on their house. You add things like the country, the city, the state, the postal code. You can think of it being similar when sending data. A packet will have the public ip of your router and other data, so it know which LAN to send it to. Deeper into the packet it has the specific computer that packet is supposed to go to. So rather than using city or country, the routing system uses subnet masking and routing tables to determine which network segments contain which IP addresses. Also, when I say "deeper into the packet", technically the router is doing NAT translation between the public IP/port combination and your internal private IP address - there is not a physical separate field in the IP packet itself for the internal address. 
